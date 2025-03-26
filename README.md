@@ -1,8 +1,3 @@
-# BTC-Lightning-POS-esp32
-Here is the complete updated README file:
-
----
-
 # Bitcoin POS Machine with ESP32 & Lightning Network
 
 🚀 **Fast, Low-Cost, and Decentralized Bitcoin Payments**
