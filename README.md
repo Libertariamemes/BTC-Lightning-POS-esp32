@@ -37,7 +37,7 @@ This project is an **open-source Bitcoin Point of Sale (POS) machine** powered b
 - **EEZ Studio by Envox** – Used to code-generate the user interface screens for LVGL.
 
 ## Setup Instructions
-1. **Flash the ESP32** with the provided firmware.
+1. Copy the contents of the "library" folder to the Arduino library folder and compile the .ino file.
 2. The POS will turn on its **Access Point (AP)**. Connect your cell phone to the ESP32's network and use the web interface to configure the **WiFi credentials** and **LNbits credentials**.
 3. **Alby** is always used through the **LNbits portal** for Lightning payments.
 4. Deploy and start accepting Lightning payments instantly!
