@@ -38,9 +38,10 @@ This project is an **open-source Bitcoin Point of Sale (POS) machine** powered b
 
 ## Setup Instructions
 1. Copy the contents of the "library" folder to the Arduino library folder and compile the .ino file.
-2. The POS will turn on its **Access Point (AP)**. Connect your cell phone to the ESP32's network and use the web interface to configure the **WiFi credentials** and **LNbits credentials**.
-3. **Alby** is always used through the **LNbits portal** for Lightning payments.
-4. Deploy and start accepting Lightning payments instantly!
+  1.1 Go to https://youtu.be/K44nnlhABAQ and follow the video step by step on how to flash and compile.
+3. The POS will turn on its **Access Point (AP)**. Connect your cell phone to the ESP32's network and use the web interface to configure the **WiFi credentials** and **LNbits credentials**.
+4. **Alby** is always used through the **LNbits portal** for Lightning payments.
+5. Deploy and start accepting Lightning payments instantly!
 
 ## Contributing
 Contributions are welcome! Feel free to submit **issues**, **pull requests**, or discuss improvements in the repository.
