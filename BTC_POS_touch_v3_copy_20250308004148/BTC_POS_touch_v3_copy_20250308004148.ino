@@ -300,7 +300,7 @@ Serial.println("Lnbits");
       DynamicJsonDocument doc(1024);
       deserializeJson(doc, payload);
 
-        String invoice_LNbits = doc["payment_request"];
+        String invoice_LNbits = doc["bolt11"]; ///MUDOU AQUI
 
         
 
