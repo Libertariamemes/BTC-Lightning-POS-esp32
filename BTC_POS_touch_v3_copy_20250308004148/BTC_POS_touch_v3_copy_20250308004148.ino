@@ -284,7 +284,8 @@ Serial.println("Lnbits");
     String Post_invoice_request;
     Post_invoice_request=
     "{\"unit\": \"sat\",\"internal\": false,\"out\": false,\"amount\": "+
-    String(total_sats)+", \"memo\": \"qq coisa\",\"expiry\": 0,\"extra\": {},\"webhook\": \"string\",\"bolt11\": \"string\",\"lnurl_callback\": \"string\"}";
+    String(total_sats)+
+    ", \"memo\": \"qq coisa\",\"expiry\": 0,\"extra\": {},\"webhook\": \"string\",\"bolt11\": \"string\"}";
 
 
         int httpCode = http.POST(String(Post_invoice_request)); // Make the request
