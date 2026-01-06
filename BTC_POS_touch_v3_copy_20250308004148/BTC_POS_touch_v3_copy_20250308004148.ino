@@ -39,6 +39,7 @@ void my_print(lv_log_level_t level, const char *buf) {
 
 bool welcome_screen;
 bool continua=1;
+bool payload_flag;
 int t;
 float a;
 float f;
@@ -48,10 +49,16 @@ bool b = 0;
 bool c = 0;
 bool d = 0;
 const char* api_key = "3e97fe7f-44be-4fec-939c-e59a9342703b";//// Replace with your CoinAPI key
-const char* api_url = "https://rest.coinapi.io/v1/exchangerate/BTC/USD";
-const char* lnbits_url ="https://empathicvenison9.lnbits.com/api/v1/payments?api-key=230bf714edbd4e678b9d714c1046c1f3";
-const char* lnbits_X_api_key="99d7c9ffb3c844a7b84d46d3b96dccc1";
-const char* lnbits_api_key="230bf714edbd4e678b9d714c1046c1f3";
+const char* api_url = "https://rest.coinapi.io/v1/exchangerate/BTC/USD";// those are for geting BTC price, use your onw or leave it black, there is a limitof request per day dont use my keys
+
+// bellow is the things you must alter to connect to LNbits
+const char* lnbits_url ="https://192.168.0.102:3007/api/v1/payments";
+const char* lnbits_X_api_key="3aeda75633c541a7b5c1cb0333dc880c";
+const char* lnbits_api_key="3aeda75633c541a7b5c1cb0333dc880c";
+
+
+///vpsgateway
+const char* VPS_libertariamemes_URL ="http://libertariamemes.com.br:8071/send";
 
 double cotacao=123456.78;
 double casa_decimal=1;
@@ -270,32 +277,54 @@ void displayBitcoinPrice() {
 }
 
 void create_LN_invoice() {/////////cria invoice/////////////////////////////////////////////////
+  
   if (WiFi.status() == WL_CONNECTED) {
+
     HTTPClient http;
-    http.begin(lnbits_url);
-    http.addHeader("X-API-KEY", lnbits_X_api_key);
-    http.addHeader("api-key", lnbits_api_key);
+    Serial.println("Enviando.");
+    //http.begin(lnbits_url);VPS_libertariamemes_URL
+    http.begin(VPS_libertariamemes_URL);
+    delay(200);
+    //http.addHeader("X-API-KEY", lnbits_X_api_key);
+    //Serial.println("Enviando..");
+    //delay(200);
+    //http.addHeader("api-key", lnbits_api_key);
+    //Serial.println("Enviando...");
+   // delay(200);
     http.addHeader("Content-Type","application/json");
+    delay(200);
     //jsonOutput=   ;
-Serial.println("Lnbits"); 
+Serial.println("Libertariamemes"); 
 
     //serializeJson(doc, jsonOutput);
 
     String Post_invoice_request;
-    Post_invoice_request=
-    "{\"unit\": \"sat\",\"internal\": false,\"out\": false,\"amount\": "+
-    String(total_sats)+
-    ", \"memo\": \"qq coisa\",\"expiry\": 0,\"extra\": {},\"webhook\": \"string\",\"bolt11\": \"string\"}";
+    Post_invoice_request="{\"out\": false, \"amount\":" +String(total_sats)+", \"memo\": \"zelokasso\"}";
+
+
+    //"{\"unit\":\"sat\",\"internal\": false,\"out\": false,\"amount\": "+String(total_sats)+",\"memo\": \"qq coisa\"}";
+
+    //,\"expiry\": 0,\"extra\": {},\"webhook\": \"string\",\"bolt11\": \"string\"}";
+    //    ,\"lnurl_callback\": \"string\"
 
 
         int httpCode = http.POST(String(Post_invoice_request)); // Make the request
+        
+
+            Serial.print("httpCode: ");
+            Serial.println(httpCode);
+            //Serial.println(http.getString());
+
+    //http.end();
 
 /*
     int httpCode = http.POST(String("{\"unit\": \"sat\",\"internal\": false,\"out\": false,\"amount\": 33, \"memo\": \"qq coisa\",\"expiry\": 0,\"extra\": {},\"webhook\": \"string\",\"bolt11\": \"string\",\"lnurl_callback\": \"string\"}")); // Make the request
 */
-
-    if (httpCode > 0) {
+/*
+    if (true) {//httpCode > 0
+    payload_flag=0;
       String payload = http.getString();
+      if(payload=="null"){payload_flag=1;}
       Serial.println(payload);
       DynamicJsonDocument doc(1024);
       deserializeJson(doc, payload);
@@ -313,7 +342,65 @@ Serial.println("Lnbits");
 
     } else {
       Serial.println("Error on HTTP request");  
+    }*/
+if(true){
+ int httpCode = http.POST(String(Post_invoice_request)); // Make the request
+  if (true) {//httpCode > 0
+
+              // Step 1: Parse outer JSON
+              //String payload = http.getString();   // the full API response
+              
+              DynamicJsonDocument outer(2048);
+              String payload = http.getString();   // the full API response
+              Serial.println(payload);
+              DeserializationError err = deserializeJson(outer, payload);
+
+              if (err) {
+                      Serial.print("JSON parse error: ");
+                      Serial.println(err.c_str());
+                        return;
+                       }
+                       // Step 2: Extract stdout as string
+            String stdoutStr = outer["stdout"];
+            Serial.println("stdout JSON string:");
+            Serial.println(stdoutStr);
+
+// Step 3: Parse inner JSON (the stdout content)
+            DynamicJsonDocument inner(2048);
+            DeserializationError err2 = deserializeJson(inner, stdoutStr);
+
+            if (err2) {
+                       Serial.print("Inner JSON parse error: ");
+                       Serial.println(err2.c_str());
+                      return;
+                      }
+
+            // Step 4: Extract bolt11 field
+              String invoice_LNbits = inner["bolt11"];
+              Serial.println("bolt11: ");
+            Serial.println(invoice_LNbits);
+invoice_LNbits.toCharArray(QR_LN_invoice,3000);
+
+
+/*String payload = http.getString();
+      Serial.println(payload);
+      DynamicJsonDocument doc(1024);
+      deserializeJson(doc, payload);
+
+        String invoice_LNbits = doc["bolt11"]; ///MUDOU AQUI
+
+        
+
+        invoice_LNbits.toCharArray(QR_LN_invoice,3000);
+        
+
+
+      Serial.println(QR_LN_invoice);
+      */
+
     }
+}
+
     http.end(); // End the request
   }  
 }
