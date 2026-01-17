@@ -8,534 +8,460 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <actions.h>
+#include <WiFiClientSecure.h>
+
+/* --- TOUCH SCREEN CONFIGURATION --- */
 #define TOUCH_SDA 33
 #define TOUCH_SCL 32
 #define TOUCH_INT 21
 #define TOUCH_RST 25
 #define TOUCH_WIDTH 320
 #define TOUCH_HEIGHT 240
+
 TAMC_GT911 tp = TAMC_GT911(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, TOUCH_WIDTH, TOUCH_HEIGHT);
+
 #if LV_USE_TFT_ESPI
 #include <TFT_eSPI.h>
 TFT_eSPI tft = TFT_eSPI();
 #include "qrcoded.h"
 #endif
+
+/* --- DISPLAY CONFIGURATION --- */
 #define TFT_HOR_RES 240
 #define TFT_VER_RES 320
 #define TFT_ROTATION LV_DISPLAY_ROTATION_0
-/*LVGL draw into this buffer, 1/10 screen size usually works well. The size is in bytes*/
 #define DRAW_BUF_SIZE (TFT_HOR_RES * TFT_VER_RES / 10 * (LV_COLOR_DEPTH / 8))
 
 uint32_t draw_buf[DRAW_BUF_SIZE / 20];
-////////afeta dirretamente a heap/dram max o acima
 
-#if LV_USE_LOG != 0
-void my_print(lv_log_level_t level, const char *buf) {
-  LV_UNUSED(level);
-  Serial.println(buf);
-  Serial.flush();
-}
-#endif
+/* --- VIRTUAL SERIAL TOUCH EMULATION --- */
+int virtual_x = 0;
+int virtual_y = 0;
+bool is_virtual_pressed = false;
+uint32_t virtual_touch_timeout = 0;
 
+/* --- GLOBAL STATE VARIABLES --- */
 bool welcome_screen;
-bool continua=1;
+bool continua = 1;
 bool payload_flag;
 int t;
 float a;
 float f;
 double total_sats = 0;
-bool flag_decimal=0;
+bool flag_decimal = 0;
 bool b = 0;
 bool c = 0;
 bool d = 0;
-const char* api_key = "3e97fe7f-44be-4fec-939c-e59a9342703b";//// Replace with your CoinAPI key
-const char* api_url = "https://rest.coinapi.io/v1/exchangerate/BTC/USD";// those are for geting BTC price, use your onw or leave it black, there is a limitof request per day dont use my keys
 
-// bellow is the things you must alter to connect to LNbits
-const char* lnbits_url ="https://192.168.0.102:3007/api/v1/payments";
-const char* lnbits_X_api_key="3aeda75633c541a7b5c1cb0333dc880c";
-const char* lnbits_api_key="3aeda75633c541a7b5c1cb0333dc880c";
+/* --- API CONFIGURATION --- */
+// NOTE: These should be stored in a secrets file for public repositories
+const char* api_key = "3e97fe7f-44be-4fec-939c-e59a9342703b";//dont abuse this key, but use if you need
+const char* api_url = "https://rest.coinapi.io/v1/exchangerate/BTC/USD";
+const char* lnbits_url = "https://uvlnbits.libertariamemes.com.br/api/v1/payments";
+const char* lnbits_X_api_key = "make your key at uvlnbits.libertariamemes.com.br";
+const char* lnbits_api_key = "make your key at uvlnbits.libertariamemes.com.br";
+const char* VPS_libertariamemes_URL = "http://libertariamemes.com.br:8071/send";// phyton on flask on a vps, but you can use the lnbits api directly see the phyton on the other folder
 
-
-///vpsgateway
-const char* VPS_libertariamemes_URL ="http://libertariamemes.com.br:8071/send";
-
-double cotacao=123456.78;
-double casa_decimal=1;
+/* --- DATA VARIABLES --- */
+double cotacao = 123456.78;
+double casa_decimal = 1;
 char jsonOutput[1024];
 char QR_LN_invoice[3000];
 
+/* --- PAYMENT POLLING VARIABLES --- */
+String current_payment_hash = "";
+bool waiting_for_payment = false;
+uint32_t last_check_time = 0;
+int check_count = 0;
 
-
-
-
-
-/* LVGL calls it when a rendered image needs to copied to the display*/
+/* --- LVGL DISPLAY CALLBACKS --- */
 void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
-  /*Copy `px map` to the `area`*/
-
-  /*For example ("my_..." functions needs to be implemented by you)
-    uint32_t w = lv_area_get_width(area);
-    uint32_t h = lv_area_get_height(area);
-
-    my_set_window(area->x1, area->y1, w, h);
-    my_draw_bitmaps(px_map, w * h);
-     */
-
-  /*Call it to tell LVGL you are ready*/
   lv_display_flush_ready(disp);
 }
 
-//static lv_disp_draw_buf_t draw_buf;
-//static lv_color_t buf[ DISPLAY_BUF_SIZE];
-/*
-void my_disp_flush( lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p ){
-    uint32_t w = ( area->x2 - area->x1 + 1 );
-    uint32_t h = ( area->y2 - area->y1 + 1 );
-
-    tft.startWrite();
-    tft.setAddrWindow( area->x1, area->y1, w, h );
-    tft.pushColors( ( uint16_t * )&color_p->full, w * h, true );
-    tft.endWrite();
-
-    lv_disp_flush_ready( disp );
-}*/
-
-
-
-
-
-/*Read the touchpad*/
 void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
+  // Priority 1: Check for Serial-based Virtual Touch
+  if (is_virtual_pressed) {
+    if (millis() > virtual_touch_timeout) {
+      is_virtual_pressed = false;
+      data->state = LV_INDEV_STATE_RELEASED;
+    } else {
+      data->state = LV_INDEV_STATE_PRESSED;
+      data->point.x = virtual_x;
+      data->point.y = virtual_y;
+      return; 
+    }
+  }
+
+  // Priority 2: Physical Hardware Touch (GT911)
   tp.read();
-  //int32_t x, y;
-  bool touched = tp.isTouched;
-  if (!touched) {
+  if (!tp.isTouched) {
     data->state = LV_INDEV_STATE_RELEASED;
   } else {
     data->state = LV_INDEV_STATE_PRESSED;
-
     data->point.x = tp.points[0].x;
     data->point.y = tp.points[0].y;
-    /*x=tp.points[0].x;
-          y=tp.points[0].y;*/
-    /*
-      Serial.println("  x: ");Serial.print(tp.points[0].x);
-      Serial.println("  y: ");Serial.print(tp.points[0].y);
-
-      Serial.println("  X: ");Serial.print(x);
-      Serial.println("  Y: ");Serial.print(y);*/
-
-    Serial.print("  xx: ");
-    Serial.println(data->point.x);
-    Serial.print("  yy: ");
-    Serial.println(data->point.y);
+    Serial.printf("HW Touch: x:%d y:%d\n", data->point.x, data->point.y);
   }
 }
 
-/*use Arduinos millis() as tick source*/
 static uint32_t my_tick(void) {
   return millis();
 }
 
+/* --- MAIN SETUP --- */
 void setup() {
-
-
   Serial.begin(115200);
-
-  Serial.println("Point of sale BITCOIN");
+  Serial.println("Bitcoin POS Terminal - Active");
   
   tp.begin();
   tp.setRotation(ROTATION_INVERTED);
-  //b=0;
- // displayBitcoinPrice();//limite diario de 100 chamadas por dia por limitacao do provedor da API
+  
   tft.fillScreen(TFT_BLACK);
   lv_init();
-  tft.fillScreen(TFT_BLACK);
-  /*Set a tick source so that LVGL will know how much time elapsed. */
   lv_tick_set_cb(my_tick);
-  tft.fillScreen(TFT_BLACK);
-
-  /* register print function for debugging */
-#if LV_USE_LOG != 0
-  lv_log_register_print_cb(my_print);
-#endif
 
   lv_display_t *disp;
 #if LV_USE_TFT_ESPI
-  /*TFT_eSPI can be enabled lv_conf.h to initialize the display in a simple way*/
   disp = lv_tft_espi_create(TFT_HOR_RES, TFT_VER_RES, draw_buf, sizeof(draw_buf));
   lv_display_set_rotation(disp, TFT_ROTATION);
-
-#else
-  /*Else create a display yourself*/
-  disp = lv_display_create(TFT_HOR_RES, TFT_VER_RES);
-  lv_display_set_flush_cb(disp, my_disp_flush);
-  lv_display_set_buffers(disp, draw_buf, NULL, sizeof(draw_buf), LV_DISPLAY_RENDER_MODE_PARTIAL);
 #endif
 
-  /*Initialize the (dummy) input device driver*/
   lv_indev_t *indev = lv_indev_create();
-  lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER); /*Touchpad should have POINTER type*/
+  lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(indev, my_touchpad_read);
 
-
-  tp.points[0].y = 0;
-  tp.points[0].x = 0;
-  welcome_screen = 0;
-
-
- tft.fillScreen(TFT_BLACK);
   ui_init();
   a = 0;
-ui_tick();
-
-  
-  //text_total_sats='a';
+  ui_tick();
 }
 
+/* --- MAIN LOOP --- */
 void loop() {
+  // Serial Command Interface
+  if (Serial.available() > 0) {
+    String input = Serial.readStringUntil('\n');
+    input.trim();
 
+    // Virtual Touch Emulation (Format: T:x,y)
+    if (input.startsWith("T:")) { 
+      int commaIndex = input.indexOf(',');
+      if (commaIndex != -1) {
+        virtual_x = input.substring(2, commaIndex).toInt();
+        virtual_y = input.substring(commaIndex + 1).toInt();
+        is_virtual_pressed = true;
+        virtual_touch_timeout = millis() + 350; 
+        Serial.printf("Emulating Touch at: %d, %d\n", virtual_x, virtual_y);
+      }
+    }
+    // Remote Invoice Generation (Format: I:amount)
+    else if (input.startsWith("I:")) {
+      double requested_amount = input.substring(2).toDouble();
+      if (requested_amount > 0) {
+        total_sats = requested_amount;
+        a = 1; // Trigger flag for processing
+        Serial.printf("Remote Request: Generating invoice for %.0f sats...\n", total_sats);
+      } else {
+        Serial.println("Error: Invalid amount provided.");
+      }
+    }
+    // Manual Payment Verification Trigger (Format: P:)
+    else if (input.startsWith("P:")) {
+      Serial.println("Manual payment check initiated...");
+      verify_payment();
+    }
+  }
 
-  if(continua){
+  // Handle Initial Configuration and WiFi
+  if (continua) {
     ui_tick();
     lv_timer_handler();
-  setup_wifi();}
-
-//create_LN_invoice();
-  //BTC_POS_MAINLOOP();
-
-    ui_tick();
-    lv_timer_handler(); /* let the GUI do its work */
-  delay(5); /* let this time pass */
-  if (c) {
-    ui_tick();
-    lv_timer_handler(); /* let the GUI do its work */
+    setup_wifi();
   }
-  if (a) {
-    create_LN_invoice();
-    qrShowCodeLNURL();
-     
-    delay(100);
-    delay(100);
-    a = 0;
-    ui_tick();
 
-    Serial.println(total_sats);
-    //total_sats=0;
-  }
-  if (b) {
-    b = 0;
-    c = 0;  //setup_wifi();
-    d = 1;  //reset wifi
-
-
-
-    // ESP.restart();
-  }
-if(f){
- // create_LN_invoice();
-  f=0;
+  ui_tick();
   
+  // Payment Polling: Checks every 5 seconds if waiting for payment
+  if (waiting_for_payment && (millis() - last_check_time > 5000)) {
+    last_check_time = millis();
+    verify_payment();
+  }
+  
+  lv_timer_handler();
+  delay(5);
+
+  // Invoice Generation Logic
+  if (a) {
+    Serial.println("Contacting LNbits for Bolt11 Invoice...");
+    create_LN_invoice();
+    
+    if (QR_LN_invoice[0] != '\0') {
+      qrShowCodeLNURL();
+      Serial.println("Invoice rendered to display.");
+      Serial.print("Bolt11 Data: ");
+      Serial.println(QR_LN_invoice);
+    } else {
+      Serial.println("System Error: Invoice generation failed.");
+    }
+    
+    a = 0; // Reset invoice trigger
+    ui_tick();
+  }
+
+  if (b) { b = 0; c = 0; d = 1; }
+  if (f) { f = 0; }
 }
 
+/* --- WIFI MANAGEMENT --- */
+void setup_wifi() {
+  if (!c) {
+    tft.fillScreen(TFT_WHITE);
+    tft.setTextSize(3);
+    tft.setTextColor(TFT_BLACK, TFT_WHITE);
+    tft.setCursor(0, 120);
+    tft.println("CONNECTING...");
 
+    WiFiManager wm;
+    wm.setTimeout(60); 
 
+    if (d) {
+      wm.resetSettings();
+      d = 0;
+      ESP.restart();
+    }
+
+    bool res = wm.autoConnect("AutoConnectAP", "password");
+
+    if (!res) {
+      Serial.println("WiFi Portal Timeout. Attempting backup credentials...");
+      tft.fillScreen(TFT_WHITE);
+      tft.setCursor(0, 120);
+      tft.println("FAILSAFE...");
+      
+      WiFi.begin("SILVA2", "silva@21");
+      
+      int attempts = 0;
+      while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+        delay(500);
+        Serial.print(".");
+        attempts++;
+      }
+
+      if (WiFi.status() != WL_CONNECTED) {
+        msg_portal_cfg();
+      }
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("Network Connection Established.");
+      tft.setCursor(0, 120);
+      tft.println("     OK!!    ");
+      tft.setCursor(0, 160);
+      tft.println("  Connected!  ");
+      delay(500);
+      ui_init();
+    }
+    c = 1;
+    displayBitcoinPrice();
+  }
+  continua = 0;
 }
 
-
-
-
-
-
-
-////////////////////////definicoes de funçoes//////////////
-
+/* --- PRICE UPDATES --- */
 void displayBitcoinPrice() {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
     http.begin(api_url);
     http.addHeader("X-CoinAPI-Key", api_key);
+    int httpCode = http.GET();
+    if (httpCode > 0) {
+      String payload = http.getString();
+      DynamicJsonDocument doc(1024);
+      deserializeJson(doc, payload);
+      cotacao = doc["rate"];
+    }
+    http.end();
+  }  
+}
 
-    int httpCode = http.GET(); // Make the request
+/* --- LIGHTNING INVOICE CREATION --- */
+void create_LN_invoice() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println(">>> NETWORK ERROR: WiFi disconnected.");
+    return;
+  }
+
+  int maxRetries = 2;
+  bool success = false;
+  QR_LN_invoice[0] = '\0'; 
+
+  for (int attempt = 1; attempt <= maxRetries; attempt++) {
+    WiFiClient stdClient;
+    HTTPClient http;
+    http.setTimeout(40000); 
+    http.begin(VPS_libertariamemes_URL);
+    http.addHeader("Content-Type", "application/json");
+
+    // Memo 'zelokasso' kept as per project logic
+    String Post_invoice_request = "{\"out\": false, \"amount\":" + String(total_sats) + ", \"memo\": \"zelokasso\"}";
+    
+    if (attempt > 1) {
+      Serial.printf("Retrying Invoice Request... (Attempt %d/%d)\n", attempt, maxRetries);
+    }
+
+    int httpCode = http.POST(Post_invoice_request);
 
     if (httpCode > 0) {
       String payload = http.getString();
-      Serial.println(payload);
-      
-      DynamicJsonDocument doc(1024);
-      deserializeJson(doc, payload);
+      DynamicJsonDocument outer(3000);
+      deserializeJson(outer, payload);
 
-       cotacao = doc["rate"];
-      String date = doc["time"];
+      String stdoutStr = outer["stdout"];
+      if (stdoutStr.length() > 0) {
+        DynamicJsonDocument inner(2048);
+        deserializeJson(inner, stdoutStr);
 
+        if (inner.containsKey("bolt11")) {
+          String invoice_LNbits = inner["bolt11"];
+          invoice_LNbits.toCharArray(QR_LN_invoice, 3000);
+
+          current_payment_hash = inner["payment_hash"].as<String>(); 
+          waiting_for_payment = true;
+          check_count = 0; 
+          success = true; 
+        }
+      }
+
+      const char* stderrStr = outer["stderr"];
+      if (!success && stderrStr && strlen(stderrStr) > 0) {
+        Serial.printf("Attempt %d Server Error: %s\n", attempt, stderrStr);
+      }
     } else {
-      Serial.println("Error on HTTP request");  
+      Serial.printf("Attempt %d Connection Failed: %s\n", attempt, http.errorToString(httpCode).c_str());
     }
-    http.end(); // End the request
-  }  
+
+    http.end();
+    if (success) break;
+    delay(1000); 
+  }
+
+  if (!success) {
+    Serial.println(">>> CRITICAL ERROR: Could not generate invoice.");
+  }
 }
 
-void create_LN_invoice() {/////////cria invoice/////////////////////////////////////////////////
-  
-  if (WiFi.status() == WL_CONNECTED) {
-
-    HTTPClient http;
-    Serial.println("Enviando.");
-    //http.begin(lnbits_url);VPS_libertariamemes_URL
-    http.begin(VPS_libertariamemes_URL);
-    delay(200);
-    //http.addHeader("X-API-KEY", lnbits_X_api_key);
-    //Serial.println("Enviando..");
-    //delay(200);
-    //http.addHeader("api-key", lnbits_api_key);
-    //Serial.println("Enviando...");
-   // delay(200);
-    http.addHeader("Content-Type","application/json");
-    delay(200);
-    //jsonOutput=   ;
-Serial.println("Libertariamemes"); 
-
-    //serializeJson(doc, jsonOutput);
-
-    String Post_invoice_request;
-    Post_invoice_request="{\"out\": false, \"amount\":" +String(total_sats)+", \"memo\": \"zelokasso\"}";
-
-
-    //"{\"unit\":\"sat\",\"internal\": false,\"out\": false,\"amount\": "+String(total_sats)+",\"memo\": \"qq coisa\"}";
-
-    //,\"expiry\": 0,\"extra\": {},\"webhook\": \"string\",\"bolt11\": \"string\"}";
-    //    ,\"lnurl_callback\": \"string\"
-
-
-        int httpCode = http.POST(String(Post_invoice_request)); // Make the request
-        
-
-            Serial.print("httpCode: ");
-            Serial.println(httpCode);
-            //Serial.println(http.getString());
-
-    //http.end();
-
-/*
-    int httpCode = http.POST(String("{\"unit\": \"sat\",\"internal\": false,\"out\": false,\"amount\": 33, \"memo\": \"qq coisa\",\"expiry\": 0,\"extra\": {},\"webhook\": \"string\",\"bolt11\": \"string\",\"lnurl_callback\": \"string\"}")); // Make the request
-*/
-/*
-    if (true) {//httpCode > 0
-    payload_flag=0;
-      String payload = http.getString();
-      if(payload=="null"){payload_flag=1;}
-      Serial.println(payload);
-      DynamicJsonDocument doc(1024);
-      deserializeJson(doc, payload);
-
-        String invoice_LNbits = doc["bolt11"]; ///MUDOU AQUI
-
-        
-
-        invoice_LNbits.toCharArray(QR_LN_invoice,3000);
-        
-
-
-      Serial.println(QR_LN_invoice);
-      
-
-    } else {
-      Serial.println("Error on HTTP request");  
-    }*/
-if(true){
- int httpCode = http.POST(String(Post_invoice_request)); // Make the request
-  if (true) {//httpCode > 0
-
-              // Step 1: Parse outer JSON
-              //String payload = http.getString();   // the full API response
-              
-              DynamicJsonDocument outer(2048);
-              String payload = http.getString();   // the full API response
-              Serial.println(payload);
-              DeserializationError err = deserializeJson(outer, payload);
-
-              if (err) {
-                      Serial.print("JSON parse error: ");
-                      Serial.println(err.c_str());
-                        return;
-                       }
-                       // Step 2: Extract stdout as string
-            String stdoutStr = outer["stdout"];
-            Serial.println("stdout JSON string:");
-            Serial.println(stdoutStr);
-
-// Step 3: Parse inner JSON (the stdout content)
-            DynamicJsonDocument inner(2048);
-            DeserializationError err2 = deserializeJson(inner, stdoutStr);
-
-            if (err2) {
-                       Serial.print("Inner JSON parse error: ");
-                       Serial.println(err2.c_str());
-                      return;
-                      }
-
-            // Step 4: Extract bolt11 field
-              String invoice_LNbits = inner["bolt11"];
-              Serial.println("bolt11: ");
-            Serial.println(invoice_LNbits);
-invoice_LNbits.toCharArray(QR_LN_invoice,3000);
-
-
-/*String payload = http.getString();
-      Serial.println(payload);
-      DynamicJsonDocument doc(1024);
-      deserializeJson(doc, payload);
-
-        String invoice_LNbits = doc["bolt11"]; ///MUDOU AQUI
-
-        
-
-        invoice_LNbits.toCharArray(QR_LN_invoice,3000);
-        
-
-
-      Serial.println(QR_LN_invoice);
-      */
-
-    }
-}
-
-    http.end(); // End the request
-  }  
-}
-
-
-
-
-void qrShowCodeLNURL()  //message
-{
- // tft.fillScreen(TFT_WHITE);
-  //qrData.toUpperCase();
- // const char *qrDataChar = qrData.c_str();
-
+/* --- QR CODE RENDERING --- */
+void qrShowCodeLNURL() {
   QRCode qrcoded;
   uint8_t qrcodeData[qrcode_getBufferSize(80)];
+  String LN_invoice_QR_local = String(QR_LN_invoice);
   
-  String LN_invoice_QR_local=String(QR_LN_invoice);
-  
-/*
-//lnbc800n1pnuukhvdqdw9cjqcm0d9ekznp4qta3jzrm4rvk0lk7phwvmquf98f660xqttnwecan06fazkymf6tgspp5gxesazhycd6q04vp9dejpg6dhfxuynn5equ7u7pae6zynnt3r22ssp50g0ldfcrj8w8tuhz04qsgslu3xuku4glylh43y343sq9sek4n0jq9qyysgqcqpcxqyz5vqrzjqw9fu4j39mycmg440ztkraa03u5qhtuc5zfgydsv6ml38qd4azymlapyqqqqqqqtxuqqqqlgqqqq86qqjqs5tjqu2tjdr6p638mn7znushr00wq7tm63cmrx9zzt2hh3mm25rk2sp09ckfy9pcv7p2ld8xp4prhedhn9xjq8h2ejckxg7gm76skssq90a9l0
-*/
-Serial.println(QR_LN_invoice);  
-Serial.println(LN_invoice_QR_local[4]);  
-if(!(LN_invoice_QR_local[4]=='\0')){ //cehcagem se nao conectou e se a string do invoice esta vazia
-  qrcode_initText(&qrcoded, qrcodeData, 14, 0, QR_LN_invoice);  //qrDataChar 
-  for (uint8_t y = 0; y < qrcoded.size; y++) {
-    // Each horizontal module
-    for (uint8_t x = 0; x < qrcoded.size; x++) {
-      if (qrcode_getModule(&qrcoded, x, y)) {
-        tft.fillRect(35 + 2 * x, 55 + 2 * y, 2, 2, TFT_BLACK);  //28 55
-      } else {
-        tft.fillRect(35 + 2 * x, 55 + 2 * y, 2, 2, TFT_WHITE);  //
+  if (!(LN_invoice_QR_local[4] == '\0')) {
+    qrcode_initText(&qrcoded, qrcodeData, 14, 0, QR_LN_invoice);
+    for (uint8_t y = 0; y < qrcoded.size; y++) {
+      for (uint8_t x = 0; x < qrcoded.size; x++) {
+        if (qrcode_getModule(&qrcoded, x, y)) {
+          tft.fillRect(35 + 2 * x, 55 + 2 * y, 2, 2, TFT_BLACK);
+        } else {
+          tft.fillRect(35 + 2 * x, 55 + 2 * y, 2, 2, TFT_WHITE);
+        }
       }
     }
   }
-  tft.setCursor(10, 220);
-  tft.setTextSize(1);
-  tft.setTextColor(TFT_BLACK, TFT_WHITE);
-  }
-  //tft.println(message);
 }
 
-
-void setup_wifi() {
-  if (!c) {  // c so roda uma unica vez se nao resetado pelo botao cfg
-  tft.fillScreen(TFT_WHITE);
-  tft.setTextSize(3);
-  tft.setCursor(0, 120);
-  tft.setTextColor(TFT_BLACK, TFT_WHITE);
-  tft.println("CONECTANDO.");
-  delay(276);
-  tft.setCursor(0, 120);
-  tft.println("CONECTANDO..");
-  delay(276);
-  tft.setCursor(0, 120);
-  tft.println("CONECTANDO...");
-  tft.setCursor(0, 160);
-    tft.println("60 sec para  ");
-    tft.setCursor(0, 200);
-  tft.println("reabrir      ");
-  tft.setCursor(0, 240);
-  tft.println("config wifi ");
-
-  delay(276);
-
-    WiFiManager wm;
-
-wm.setTimeout(60);
-//wm.resetSettings();
-
-    if (d) {
-      wm.resetSettings();  //apenas reseta manualmente pelo botao config
-          // reset settings - wipe stored credentials for testing
-    // these are stored by the esp library
-      d = 0;
- ESP.restart();
-
-
-
-    }  ///reseta password
-
-    // Automatically connect using saved credentials,
-    // if connection fails, it starts an access point with the specified name ( "AutoConnectAP"),
-    // if empty will auto generate SSID, if password is blank it will be anonymous AP (wm.autoConnect())
-    // then goes into a blocking loop awaiting configuration and will return success result
-
-    bool res;
-    // res = wm.autoConnect(); // auto generated AP name from chipid
-    // res = wm.autoConnect("AutoConnectAP"); // anonymous ap
-
-    res = wm.autoConnect("AutoConnectAP", "password");  // password protected ap
-
-    if (!res) {
-      Serial.println("Failed to connect");
-      msg_portal_cfg();
-      
-      // ESP.restart();
-
-
-    } else {
-      //if you get here you have connected to the WiFi
-      Serial.println("connected...yeey :)");
-      tft.setCursor(0, 120);
-        //tft.println("CONECTANDO...")
-        tft.println("     OK!!    ");
-          tft.setCursor(0, 160);
-    tft.println("  conectado!  ");
-    tft.setCursor(0, 200);
-  tft.println("            ");
-  tft.setCursor(0, 240);
-  tft.println("            ");
-          delay(50);
-      ui_init();
-    }
-    c = 1;
-    displayBitcoinPrice();
-    
-  }
-  continua=0;
-}
-
-
-
-void msg_portal_cfg(){
+/* --- CAPTIVE PORTAL UI MESSAGE --- */
+void msg_portal_cfg() {
   tft.fillScreen(TFT_BLACK);
   tft.setTextSize(3);
   tft.setCursor(0, 60);
   tft.setTextColor(TFT_BLUE, TFT_BLACK);
   tft.println("CONFIGURE");
-  tft.println("PELO CELULAR");
-  tft.println("CELULAR");
+  tft.println("VIA PHONE");
   tft.println("------------");
-  tft.println("CONECTANDO ");
-  tft.println("NA REDE ");
-  tft.println("AutoConnectAP");
-  tft.println("SENHA ");
-  tft.println("password");
+  tft.println("SSID: AutoConnectAP");
+  tft.println("PASS: password");
+}
+
+/* --- PAYMENT VERIFICATION --- */
+void verify_payment() {
+  if (current_payment_hash == "" || WiFi.status() != WL_CONNECTED) return;
+
+  // Manual Serial Override
+  if (Serial.available() > 0) {
+    char incoming = Serial.read();
+    if (incoming == 'c' || incoming == 'C' || incoming == 'x' || incoming == 'X') {
+      Serial.println("\n >>> MANUAL CANCELLATION VIA SERIAL <<<");
+      waiting_for_payment = false;
+      current_payment_hash = "";
+      tft.fillScreen(TFT_BLACK);
+      ui_init(); 
+      return; 
+    }
   }
+
+  check_count++;
+  Serial.printf("\n--- Checking Payment Status (%d/40) ---\n", check_count);
+
+  WiFiClientSecure client;
+  client.setInsecure(); 
+  client.setHandshakeTimeout(45); 
+
+  HTTPClient http;
+  
+  // NOTE: Target URL without trailing slash as required by VPS redirect policy
+  http.begin(client, "https://libertariamemes.com.br/check_payment"); // phyton on flask on a vps, but you can use the lnbits api directly see the phyton on the other folder
+  http.setTimeout(15000); 
+  
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("User-Agent", "ESP32-POS-Terminal");
+
+  String jsonReq = "{\"payment_hash\":\"" + current_payment_hash + "\"}";
+  Serial.print("Checking Hash: "); Serial.println(current_payment_hash);
+
+  int httpCode = http.POST(jsonReq);
+
+  if (httpCode == 200) {
+    String payload = http.getString();
+    DynamicJsonDocument doc(2048);
+    deserializeJson(doc, payload);
+
+    if (doc["success"] == true && doc.containsKey("stdout")) {
+      String stdoutStr = doc["stdout"];
+      DynamicJsonDocument lnbitsResult(1024);
+      deserializeJson(lnbitsResult, stdoutStr);
+
+      if (lnbitsResult["paid"] == true) {
+        Serial.println("🎉 PAYMENT CONFIRMED!");
+        tft.fillScreen(TFT_GREEN);
+        tft.setTextColor(TFT_BLACK);
+        tft.setCursor(40, 100);
+        tft.setTextSize(3);
+        tft.println("PAID OK");
+        
+        waiting_for_payment = false;
+        current_payment_hash = "";
+        return;
+      } else {
+        Serial.println("Status: Unpaid.");
+      }
+    }
+  } else {
+    Serial.printf("Request Failed: %s (%d)\n", http.errorToString(httpCode).c_str(), httpCode);
+  }
+  
+  http.end();
+
+  // Timeout logic after 40 attempts (~3.3 minutes at 5s intervals)
+  if (check_count >= 40) {
+    Serial.println("Polling Timeout Reached.");
+    waiting_for_payment = false;
+    current_payment_hash = "";
+    tft.fillScreen(TFT_RED);
+    tft.setTextColor(TFT_WHITE);
+    tft.setCursor(20, 120);
+    tft.println("TIMEOUT");
+    delay(5000);
+    ui_init(); 
+  }
+}
