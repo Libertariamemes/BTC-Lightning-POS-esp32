@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+your keyfrom fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import subprocess
@@ -31,7 +31,7 @@ def run_curl(data: PaymentData):
                 "curl", "-sS",
                 "-X", "POST",
                 API_URL,
-                "-H", "X-Api-Key: 7501f20dd38748aeaf0cb58b01d12eda",
+                "-H", "X-Api-Key: make your key at libertariamemes.com.br",
                 "-H", "Content-Type: application/json",
                 "-d", f'{{"out": {str(data.out).lower()}, "amount": {data.amount}, "memo": "{data.memo}"}}'
             ],
