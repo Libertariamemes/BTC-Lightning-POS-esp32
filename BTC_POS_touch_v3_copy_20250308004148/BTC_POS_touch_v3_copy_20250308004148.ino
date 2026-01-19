@@ -52,6 +52,11 @@ bool flag_decimal = 0;
 bool b = 0;
 bool c = 0;
 bool d = 0;
+volatile bool cancel_verification_requested = false;
+//unsigned long last_check_time = 0;
+const unsigned long CHECK_INTERVAL = 3000; // 3 seconds
+
+
 
 /* --- API CONFIGURATION --- */
 // NOTE: These should be stored in a secrets file for public repositories
@@ -80,7 +85,7 @@ void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
 }
 
 void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
-  // Priority 1: Check for Serial-based Virtual Touch
+  // Priority 1: Virtual Touch
   if (is_virtual_pressed) {
     if (millis() > virtual_touch_timeout) {
       is_virtual_pressed = false;
@@ -89,11 +94,11 @@ void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
       data->state = LV_INDEV_STATE_PRESSED;
       data->point.x = virtual_x;
       data->point.y = virtual_y;
-      return; 
+      return;
     }
   }
 
-  // Priority 2: Physical Hardware Touch (GT911)
+  // Priority 2: Physical Touch
   tp.read();
   if (!tp.isTouched) {
     data->state = LV_INDEV_STATE_RELEASED;
@@ -102,8 +107,14 @@ void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
     data->point.x = tp.points[0].x;
     data->point.y = tp.points[0].y;
     Serial.printf("HW Touch: x:%d y:%d\n", data->point.x, data->point.y);
+
+
   }
 }
+
+
+
+
 
 static uint32_t my_tick(void) {
   return millis();
@@ -171,6 +182,10 @@ void loop() {
       verify_payment();
     }
   }
+  ///calcel payment//
+  if (waiting_for_payment) {
+  check_cancel_touch();
+}
 
   // Handle Initial Configuration and WiFi
   if (continua) {
@@ -383,9 +398,45 @@ void msg_portal_cfg() {
   tft.println("PASS: password");
 }
 
+////// cancel logic/////
+void check_cancel_touch() {
+  if (!waiting_for_payment) return;
+
+  tp.read();
+  if (tp.isTouched) {
+    int x = tp.points[0].x;
+    if (x > (TFT_HOR_RES / 2)) {
+      Serial.println(">>> TOUCH CANCEL DETECTED (RIGHT HALF) <<<");
+      cancel_verification_requested = true;
+    }
+  }
+}
+
+
+
+
+/* --- PAYMENT VERIFICATION --- */
 /* --- PAYMENT VERIFICATION --- */
 void verify_payment() {
-  if (current_payment_hash == "" || WiFi.status() != WL_CONNECTED) return;
+  // 🔴 Immediate cancel
+  if (cancel_verification_requested) {
+    Serial.println(">>> PAYMENT CHECK CANCELLED BY TOUCH <<<");
+    cancel_verification_requested = false;
+    waiting_for_payment = false;
+    current_payment_hash = "";
+
+    tft.fillScreen(TFT_YELLOW);
+    tft.setTextColor(TFT_BLACK);
+    tft.setTextSize(2);
+    tft.setCursor(20, 120);
+    tft.println("PAYMENT CANCELED");
+    delay(2000);
+
+    ui_init();
+    return;
+  }
+
+  if (!waiting_for_payment || current_payment_hash == "" || WiFi.status() != WL_CONNECTED) return;
 
   // Manual Serial Override
   if (Serial.available() > 0) {
@@ -394,9 +445,16 @@ void verify_payment() {
       Serial.println("\n >>> MANUAL CANCELLATION VIA SERIAL <<<");
       waiting_for_payment = false;
       current_payment_hash = "";
-      tft.fillScreen(TFT_BLACK);
-      ui_init(); 
-      return; 
+
+      tft.fillScreen(TFT_YELLOW);
+      tft.setTextColor(TFT_BLACK);
+      tft.setTextSize(2);
+      tft.setCursor(20, 120);
+      tft.println("PAYMENT CANCELED");
+      delay(500);
+
+      //ui_init();
+      return;
     }
   }
 
@@ -405,13 +463,11 @@ void verify_payment() {
 
   WiFiClientSecure client;
   client.setInsecure(); 
-  client.setHandshakeTimeout(45); 
+  client.setHandshakeTimeout(30);
 
   HTTPClient http;
-  
-  // NOTE: Target URL without trailing slash as required by VPS redirect policy
-  http.begin(client, "https://libertariamemes.com.br/check_payment"); // phyton on flask on a vps, but you can use the lnbits api directly see the phyton on the other folder
-  http.setTimeout(15000); 
+  http.begin(client, "https://libertariamemes.com.br/check_payment");
+  http.setTimeout(15000);
   
   http.addHeader("Content-Type", "application/json");
   http.addHeader("User-Agent", "ESP32-POS-Terminal");
@@ -419,16 +475,30 @@ void verify_payment() {
   String jsonReq = "{\"payment_hash\":\"" + current_payment_hash + "\"}";
   Serial.print("Checking Hash: "); Serial.println(current_payment_hash);
 
+  // 🧠 Keep LVGL alive + avoid watchdog
+  lv_timer_handler();
+  yield();
+  delay(1);
+
   int httpCode = http.POST(jsonReq);
+
+  // 🧠 Keep LVGL alive again
+  lv_timer_handler();
+  yield();
+  delay(1);
 
   if (httpCode == 200) {
     String payload = http.getString();
-    DynamicJsonDocument doc(2048);
+
+    static DynamicJsonDocument doc(2048);
+    static DynamicJsonDocument lnbitsResult(1024);
+    doc.clear();
+    lnbitsResult.clear();
+
     deserializeJson(doc, payload);
 
     if (doc["success"] == true && doc.containsKey("stdout")) {
       String stdoutStr = doc["stdout"];
-      DynamicJsonDocument lnbitsResult(1024);
       deserializeJson(lnbitsResult, stdoutStr);
 
       if (lnbitsResult["paid"] == true) {
@@ -452,16 +522,22 @@ void verify_payment() {
   
   http.end();
 
-  // Timeout logic after 40 attempts (~3.3 minutes at 5s intervals)
+  // 🔴 Timeout
   if (check_count >= 40) {
     Serial.println("Polling Timeout Reached.");
     waiting_for_payment = false;
     current_payment_hash = "";
-    tft.fillScreen(TFT_RED);
-    tft.setTextColor(TFT_WHITE);
-    tft.setCursor(20, 120);
-    tft.println("TIMEOUT");
-    delay(5000);
-    ui_init(); 
+
+    tft.fillScreen(TFT_YELLOW);
+    tft.setTextColor(TFT_BLACK);
+    tft.setTextSize(2);
+    tft.setCursor(40, 120);
+    tft.println("PAYMENT TIMEOUT");
+    delay(2000);
+
+    //ui_init(); 
   }
 }
+
+
+
