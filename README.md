@@ -62,7 +62,7 @@ If you are starting from scratch, follow this step-by-step video guide on how to
 * Connect your smartphone to this network.
 * A captive portal will appear. Enter your WiFi credentials.
 * Configure your LNbits credentials (API Key and URL) via the same interface.
-* **Backend Guide:** https://youtu.be/gCyX8zlCc1U *(Note: Video covers most logic; update for latest commit coming soon).*
+* **Backend Guide:** https://youtu.be/vgjEAOR883I?si=2dsIBsVzTYJbWO1C *(Note: Video covers most logic; update for latest commit coming soon).*
 
 ---
 
