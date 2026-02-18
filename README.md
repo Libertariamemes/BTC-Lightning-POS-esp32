@@ -55,8 +55,7 @@ This project is an open-source Bitcoin Point of Sale (POS) machine powered by an
 
 ### 2. Flashing
 If you are starting from scratch, follow this step-by-step video guide on how to flash and compile:
-👉 **How to Flash from Zero:** https://youtu.be/K44nnlhABAQ
-
+👉 **How to Flash from Zero:** https://youtu.be/vgjEAOR883I?si=2dsIBsVzTYJbWO1C
 ### 3. WiFi & Backend Configuration
 * Upon first boot, the POS will start its own Access Point (AP) named `AutoConnectAP`.
 * Connect your smartphone to this network.
