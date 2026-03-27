@@ -1,0 +1,6 @@
+build/
+build_output/
+*.bin
+*.elf
+*.hex
+.DS_Store
